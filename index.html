@@ -206,6 +206,20 @@ input:focus, textarea:focus, select:focus { border-color: #6C3FC5; }
     </div>
   </div>
 </div>
+<div class="card" id="crmCard">
+  <div class="section-title">Посещение и тест из CRM</div>
+  <div style="font-size:13px;color:#6B6280;line-height:1.45;margin-bottom:10px">Выберите блок выше и нажмите кнопку: имена, посещение, отработки пропусков, тренировки в приложении и баллы теста за блок подтянутся из BigBen. Пол, навыки, ДЗ и заметку заполните сами.</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input type="text" id="crmCode" placeholder="Код учителя" autocomplete="off" style="flex:1;min-width:140px">
+    <button type="button" id="crmBtn" class="genbtn" onclick="crmPull()" style="width:auto;flex:none;padding:11px 18px;font-size:14px;margin:0">Подтянуть из CRM</button>
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:12px;color:#6B6280">
+    <span>Свои даты (если блок не закрыт тестом юнита — контрольная, финал):</span>
+    <input type="date" id="crmFrom" style="flex:none;width:auto;padding:6px 8px;border-radius:8px;border:1.5px solid #ddd;font-size:13px;font-family:inherit"> –
+    <input type="date" id="crmTo" style="flex:none;width:auto;padding:6px 8px;border-radius:8px;border:1.5px solid #ddd;font-size:13px;font-family:inherit">
+  </div>
+  <div id="crmMsg" style="font-size:13px;line-height:1.5;margin-top:10px;color:#3B1F78"></div>
+</div>
 <div id="pupilRows"></div>
 <div class="card" style="text-align:center">
   <button class="genbtn" onclick="genGroup()" style="max-width:400px;margin:0 auto 10px">Сгенерировать все отчёты</button>
@@ -308,6 +322,97 @@ for (var pi=1;pi<=12;pi++) PS[pi]={o:'',app:'',skills:{}};
 
 var currentTeacher = '';
 
+// ════════════════════════════════════════
+// CRM: посещение и тест блока (nihao-bot /reports/submit, crm)
+// ════════════════════════════════════════
+var CRM_GROUPS=['PREPARE 3'], CRM_CONSULT='Консультация Prepare 3', CRM_HOME='prep3', CRM_INTRO_L=0;
+var CRM_URLS=['https://d5d6o4mldv5m1nj5hvih.6brbn2wz.apigw.yandexcloud.net/nihao/reports/submit','https://nihao-bot.o-sintsova.workers.dev/reports/submit'];
+function crmQuery(ui){
+  var n=BLOCKS[ui].n; // блок = 2 юнита учебника; вводных уроков у Prepare 3 нет
+  return {units:[2*n-1,2*n],prevUnits:n>1?[2*n-3,2*n-2]:[],introL:CRM_INTRO_L};
+}
+function crmPost(body){
+  var i=0;
+  return new Promise(function(res,rej){
+    (function next(){
+      if(i>=CRM_URLS.length) return rej(new Error('net'));
+      var ctl=window.AbortController?new AbortController():null, tm=setTimeout(function(){ if(ctl)ctl.abort(); },75000);
+      fetch(CRM_URLS[i++],{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:ctl?ctl.signal:undefined})
+        .then(function(r){return r.json();}).then(function(j){clearTimeout(tm);res(j);})
+        .catch(function(){clearTimeout(tm);next();});
+    })();
+  });
+}
+function crmName(fio){ return String(fio).trim().split(/\s+/).join(' '); /* как в CRM: «Фамилия Имя» — в отчёте имя = последнее слово */ }
+function crmWords(s){ return String(s||'').toLowerCase().replace(/ё/g,'е').split(/\s+/).filter(Boolean); }
+function crmEl(i,f){ return document.getElementById('p'+i+'_'+f); }
+function crmOpt(i,key,val){
+  var order=key==='o'?['none','all','partial','no']:['regular','sometimes','rarely','never'];
+  var b=document.querySelectorAll('#p'+i+(key==='o'?'_orow':'_approw')+' .mob')[order.indexOf(val)]; if(b) b.click();
+}
+function crmSetOf(i,of){ PS[i].of=of; var al=document.getElementById('p'+i+'_attlab'); if(al) al.textContent='Посещ. / '+of+' (CRM)'; }
+function crmRow(name,used){
+  var want=crmWords(name), empty=0;
+  for(var i=1;i<=12;i++){
+    var v=crmEl(i,'name').value.trim();
+    if(!v){ if(!empty&&!used[i])empty=i; continue; }
+    var have=crmWords(v);
+    if(!used[i]&&want.every(function(w){return have.indexOf(w)>=0;})) return i;
+  }
+  return empty;
+}
+function crmDm(d){ return d?d.slice(8,10)+'.'+d.slice(5,7):''; }
+function crmEsc(s){ return String(s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+function crmGroupName(){ var s=document.getElementById('crmGroup'); return s?s.value:CRM_GROUPS[0]; }
+function crmClearDates(){ var a=document.getElementById('crmFrom'), b=document.getElementById('crmTo'); if(a)a.value=''; if(b)b.value=''; }
+function crmPull(){
+  var msg=document.getElementById('crmMsg'), btn=document.getElementById('crmBtn');
+  var ui=GS.bi, u=BLOCKS[ui], q;
+  var df=document.getElementById('crmFrom').value, dt=document.getElementById('crmTo').value;
+  if(df||dt){
+    if(!df||!dt||df>dt){ msg.innerHTML='Укажите обе даты периода: «с» и «по» (первая — раньше второй).'; return; }
+    q={from:df,to:dt};
+  } else q=crmQuery(ui);
+  if(!q){ msg.innerHTML='Блок «'+crmEsc(u.label)+'» не закрывается тестом юнита в CRM. Укажите даты периода выше — подтянутся уроки за эти дни — или заполните вручную.'; return; }
+  var code=document.getElementById('crmCode').value.trim();
+  if(!code){ msg.innerHTML='Введите код учителя (тот же, что для отправки отчётов родителям).'; return; }
+  var group=crmGroupName(), what=q.from?'период '+crmDm(q.from)+'–'+crmDm(q.to):u.label;
+  try{ localStorage.setItem('ss_tcode',code); localStorage.setItem('ss_crmgroup_'+CRM_HOME,group); }catch(e){}
+  btn.disabled=true; btn.textContent='Загружаю…'; msg.innerHTML='Смотрю BigBen: '+crmEsc(group)+', '+crmEsc(what)+'…';
+  crmPost({code:code,crm:Object.assign({group:group,consult:CRM_CONSULT,app:true,home:CRM_HOME},q)}).then(function(j){
+    btn.disabled=false; btn.textContent='Подтянуть из CRM';
+    if(!j||!j.ok){ msg.innerHTML='⚠️ '+crmEsc((j&&j.error)||'Не получилось'); return; }
+    if(!j.lessons){ msg.innerHTML=q.from?'В CRM нет уроков группы «'+crmEsc(group)+'» за этот период.':'В CRM пока нет уроков блока «'+crmEsc(u.label)+'» (группа «'+crmEsc(group)+'»). Если тест юнита записан в CRM раньше, чем закончился блок, укажите даты периода выше.'; return; }
+    if(j.testMax) document.getElementById('gTestTotal').value=j.testMax;
+    var used={}, notes=[], n=0, pre=new RegExp('^'+CRM_HOME+'-');
+    j.students.forEach(function(s){
+      var nm=crmName(s.fio), i=crmRow(nm,used);
+      if(!i){ notes.push(crmEsc(nm)+' — нет свободной строки'); return; }
+      used[i]=1; n++;
+      var ni=crmEl(i,'name'); if(!ni.value.trim()) ni.value=nm;
+      var of=s.lessons||j.lessons; crmSetOf(i,of);
+      var ai=crmEl(i,'att'); ai.max=of; ai.value=Math.max(0,of-s.missed.length);
+      var ti=crmEl(i,'ts');
+      if(s.score!==null&&s.score!==undefined) ti.value=s.score;
+      var bits=[];
+      var made=s.made||[];
+      if(!s.missed.length) crmOpt(i,'o','none'); else crmOpt(i,'o',made.length>=s.missed.length?'all':made.length?'partial':'no');
+      if(s.app) crmOpt(i,'app',s.app.level);
+      if(s.missed.length) bits.push('пропуски '+s.missed.map(function(d){return crmDm(d)+(made.indexOf(d)>=0?' (отработан)':'');}).join(', '));
+      if(s.home&&s.home.length) bits.push('«Урок дома»: '+s.home.map(function(h){return crmDm(h.day)+' '+crmEsc(String(h.lesson).replace(pre,''))+(h.score?' ('+crmEsc(h.score)+')':'');}).join(', '));
+      if(s.app) bits.push(s.app.days?'приложение: '+s.app.days+' дн. тренировок, '+s.app.weeks+' нед. из '+s.app.of:'тренировок в приложении нет');
+      if(j.tests.length&&s.score===null) bits.push('теста нет в CRM');
+      else if(s.testsDone<s.testsAll) bits.push('в CRM '+s.testsDone+' из '+s.testsAll+' тестов');
+      if(bits.length) notes.push('<strong>'+crmEsc(nm)+'</strong> — '+bits.join('; '));
+    });
+    var tl=j.tests.length?'тест: '+j.tests.map(function(t){return crmEsc(t.cap)+' ('+t.max+')';}).join(' + ')+' = '+j.testMax:'тестов '+(q.from?'за этот период':'этого блока')+' в CRM пока нет';
+    msg.innerHTML='✓ '+crmEsc(group)+' · '+crmEsc(u.label)+': уроки '+crmDm(j.from)+'–'+crmDm(j.to)+' ('+j.lessons+' в CRM), '+tl+'. Заполнено учеников: '+n+'.'+
+      (notes.length?'<div style="margin-top:6px;color:#6B6280">'+notes.join('<br>')+'</div>':'')+
+      '<div style="margin-top:6px;color:#6B6280">Посещение — как в CRM: был / уроков блока в CRM (у пришедших позже — только их уроки). «Пропуски» — отработан, если ученик был в группе «'+crmEsc(CRM_CONSULT)+'» в течение 8 дней после пропуска или прошёл «Урок дома» в течение 14 дней. «Приложение» — по неделям с тренировками: 3 из 4 и больше — регулярно, от 40% — иногда, меньше — редко.</div>';
+  }).catch(function(){ btn.disabled=false; btn.textContent='Подтянуть из CRM'; msg.innerHTML='⚠️ Нет связи с сервером. Если включён VPN — выключите и попробуйте ещё раз.'; });
+}
+(function(){ try{ var c=localStorage.getItem('ss_tcode'), g=localStorage.getItem('ss_crmgroup_'+CRM_HOME); document.addEventListener('DOMContentLoaded',function(){ var i=document.getElementById('crmCode'); if(c&&i&&!i.value) i.value=c; var s=document.getElementById('crmGroup'); if(g&&s&&CRM_GROUPS.indexOf(g)>=0) s.value=g; }); }catch(e){} })();
+
 // ════════════ INIT ════════════
 function init(){
   buildBlockPills('blockPills','one');
@@ -344,6 +449,12 @@ function selBlockByIdx(idx, mode, btn){
     if(btn) btn.classList.add('on');
     else document.querySelectorAll('#gBlockPills .pill')[idx].classList.add('on');
     document.getElementById('uinfo-group').innerHTML='<strong>'+b.units+' · '+b.title+'</strong><br>Лексика: '+b.vocab+'<br>Грамматика: '+b.grammar;
+    for(var pi=1;pi<=12;pi++){
+      if(PS[pi]) PS[pi].of=0;
+      var lab=document.getElementById('p'+pi+'_attlab'); if(lab) lab.textContent='Посещ. / 7';
+      var inp=document.getElementById('p'+pi+'_att'); if(inp) inp.max=7;
+    }
+    crmClearDates();
   }
 }
 
@@ -396,8 +507,8 @@ function chkOne(){
 }
 
 // ════════════ BUILD REPORT TEXT ════════════
-function buildReport(name,gender,blockIdx,skillVals,att,online,hw,app,ts,tt,note,teacher){
-  var b=BLOCKS[blockIdx];
+function buildReport(name,gender,blockIdx,skillVals,att,online,hw,app,ts,tt,note,teacher,of){
+  var b=BLOCKS[blockIdx], LL=parseInt(of,10)||7; // of — уроков блока в CRM (кнопка «Подтянуть из CRM»), иначе 7 по плану
   var suf=gender==='f'?'а':'';
   var He=gender==='f'?'Она':'Он';
   var firstName=name.split(' ').pop();
@@ -413,10 +524,10 @@ function buildReport(name,gender,blockIdx,skillVals,att,online,hw,app,ts,tt,note
   txt+='Грамматика блока: '+b.grammar+'. '+b.oge+'\n\n';
 
   txt+='📅 ПОСЕЩАЕМОСТЬ\n';
-  if(present>=7){
-    txt+=firstName+' посетил'+suf+' все 7 уроков блока, включая урок-тест. Отличная регулярность — каждое занятие строится на предыдущем.\n\n';
+  if(present>=LL){
+    txt+=firstName+' посетил'+suf+' все '+LL+' '+(LL%10>=2&&LL%10<=4&&(LL%100<10||LL%100>=20)?'урока':'уроков')+' блока, включая урок-тест. Отличная регулярность — каждое занятие строится на предыдущем.\n\n';
   } else {
-    txt+=firstName+' посетил'+suf+' '+present+' из 7 уроков блока. '+OL[online||'none']+'.\n\n';
+    txt+=firstName+' посетил'+suf+' '+present+' из '+LL+' '+(LL%10===1&&LL%100!==11?'урока':'уроков')+' блока. '+OL[online||'none']+'.\n\n';
   }
 
   if(hasPct){
@@ -526,7 +637,7 @@ function buildPupilRowHTML(i){
     '<div class="pupil-grid">'+
       '<div class="pupil-field full"><label>Имя</label><input type="text" id="p'+i+'_name" placeholder="Фамилия Имя" oninput="chkGroup()"></div>'+
       '<div class="pupil-field"><label>Пол</label><select id="p'+i+'_gender"><option value="m">М</option><option value="f">Ж</option></select></div>'+
-      '<div class="pupil-field"><label>Посещ. / 7</label><input type="number" id="p'+i+'_att" placeholder="7" min="0" max="7"></div>'+
+      '<div class="pupil-field"><label id="p'+i+'_attlab">Посещ. / 7</label><input type="number" id="p'+i+'_att" placeholder="7" min="0" max="7"></div>'+
       '<div class="pupil-field"><label>ДЗ %</label><input type="number" id="p'+i+'_hw" placeholder="90" min="0" max="100"></div>'+
       '<div class="pupil-field"><label>Тест (набрано)</label><input type="number" id="p'+i+'_ts" placeholder="16" min="0"></div>'+
     '</div>'+
@@ -573,7 +684,7 @@ function genGroup(){
     var ts=document.getElementById('p'+i+'_ts').value;
     var note=document.getElementById('p'+i+'_note').value;
     var skillVals=PS[i].skills||{};
-    var txt=buildReport(name,gender,GS.bi,skillVals,att,PS[i].o,hw,PS[i].app,ts,tt,note,teacher);
+    var txt=buildReport(name,gender,GS.bi,skillVals,att,PS[i].o,hw,PS[i].app,ts,tt,note,teacher,PS[i].of);
     var card=document.createElement('div');
     card.className='card';
     var btnId='gcpbtn'+i;
@@ -640,7 +751,7 @@ function saveGroup(){
     var data={ name:name, gender:document.getElementById('p'+i+'_gender').value,
       teacher:currentTeacher, blockIdx:GS.bi,
       skills:Object.assign({},PS[i].skills||{}),
-      att:document.getElementById('p'+i+'_att').value, online:PS[i].o,
+      att:document.getElementById('p'+i+'_att').value, attOf:PS[i].of||'', online:PS[i].o,
       hw:document.getElementById('p'+i+'_hw').value, app:PS[i].app,
       ts:document.getElementById('p'+i+'_ts').value, tt:tt,
       note:document.getElementById('p'+i+'_note').value.trim(), savedAt:new Date().toLocaleDateString('ru') };
@@ -710,7 +821,7 @@ function showBlockData(name,blockIdx){
   var b=BLOCKS[blockIdx];
   var msg=b.label+' — '+b.title+'\n';
   SKILLS.forEach(function(sk){ if(d.skills&&d.skills[sk.id]) msg+=sk.label+': '+d.skills[sk.id]+'/5  '; });
-  msg+='\n'+(d.att?'Посещаемость: '+d.att+'/7\n':'')+(d.hw?'ДЗ: '+d.hw+'%\n':'')+
+  msg+='\n'+(d.att?'Посещаемость: '+d.att+'/'+(d.attOf||7)+'\n':'')+(d.hw?'ДЗ: '+d.hw+'%\n':'')+
     (d.ts?'Тест: '+d.ts+(d.tt?'/'+d.tt:'')+'\n':'')+(d.note?'Заметка: '+d.note+'\n':'')+
     'Сохранено: '+d.savedAt;
   alert(msg);
@@ -739,7 +850,7 @@ function trend(arr){
 
 function showYearReport(name){
   var rows='';
-  var totalAtt=0,totalHw=0,hwCount=0;
+  var totalAtt=0,totalMax=0,totalHw=0,hwCount=0;
   var testPcts=[],completedBlocks=0;
   var skillArrays={};
   SKILLS.forEach(function(sk){skillArrays[sk.id]=[];});
@@ -751,7 +862,7 @@ function showYearReport(name){
     var b=BLOCKS[u];
     if(d){
       if(d.gender) gender=d.gender;
-      completedBlocks++;
+      completedBlocks++; totalMax+=parseInt(d.attOf,10)||7;
       var pct=(d.ts&&d.tt&&parseFloat(d.tt)>0)?Math.round(parseFloat(d.ts)/parseFloat(d.tt)*100):null;
       if(pct!==null) testPcts.push(pct);
       SKILLS.forEach(function(sk){ if(d.skills&&d.skills[sk.id]) skillArrays[sk.id].push(parseInt(d.skills[sk.id])); });
@@ -765,7 +876,7 @@ function showYearReport(name){
         '<td style="font-weight:700;color:#6C3FC5;font-size:10px">'+b.label+'</td>'+
         '<td style="font-size:9px;color:#888">'+b.m+'</td>'+
         skillCells+
-        '<td>'+(d.att?d.att+'/7':'—')+'</td>'+
+        '<td>'+(d.att?d.att+'/'+(d.attOf||7):'—')+'</td>'+
         '<td>'+(d.hw?d.hw+'%':'—')+'</td>'+
         '<td>'+(pct!==null?pct+'%':(d.ts||'—'))+'</td>'+
       '</tr>';
@@ -787,7 +898,7 @@ function showYearReport(name){
   }).join('');
   var avgHw=hwCount?Math.round(totalHw/hwCount)+'%':'—';
   var avgTest=testPcts.length?Math.round(testPcts.reduce(function(a,b){return a+b;},0)/testPcts.length)+'%':'—';
-  var totalAttStr=totalAtt>0?totalAtt+'/'+(completedBlocks*7):'—';
+  var totalAttStr=totalAtt>0?totalAtt+'/'+totalMax:'—';
 
   rows+='<tr style="background:#EDE7FA;font-weight:700">'+
     '<td colspan="2" style="font-size:10px;color:#6C3FC5">Среднее</td>'+
@@ -813,7 +924,7 @@ function showYearReport(name){
   var strong=skillSummaries.filter(function(s){return s.level==='strong';}).map(function(s){return s.label;});
   var weak=skillSummaries.filter(function(s){return s.level==='weak';}).map(function(s){return s.label;});
 
-  var attPct=totalAtt>0?Math.round(totalAtt/(completedBlocks*7)*100):0;
+  var attPct=totalAtt>0?Math.round(totalAtt/(totalMax||1)*100):0;
   var avgTestN=testPcts.length?Math.round(testPcts.reduce(function(a,b){return a+b;},0)/testPcts.length):null;
   var avgHwN=hwCount?Math.round(totalHw/hwCount):null;
 
